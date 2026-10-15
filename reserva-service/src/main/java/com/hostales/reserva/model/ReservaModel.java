@@ -27,6 +27,15 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.time.OffsetDateTime;
+import com.hostales.reserva.bean.dto.DisponibilidadResponseDto;
+import com.hostales.reserva.bean.dto.HabitacionDisponibleDto;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -362,6 +371,416 @@ public class ReservaModel implements ReservaUseCase {
                 .origen(reserva.getOrigen())
                 .observaciones(reserva.getObservaciones())
                 .creadoEn(reserva.getCreadoEn())
+                .entradaReal(reserva.getEntradaReal())
+                .salidaReal(reserva.getSalidaReal())
                 .build();
     }
+
+    @Override
+    public ReservaResponseDto cancelarReserva(
+            Long empresaId, Long hostalId, Long reservaId
+    ) {
+        validarId(reservaId, "reserva");
+        validarHostal(empresaId, hostalId);
+
+        Reserva reserva = reservaRepository
+                .findByReservaIdAndEmpresaIdAndHostalId(
+                        reservaId, empresaId, hostalId
+                )
+                .orElseThrow(() -> error(
+                        HttpStatus.NOT_FOUND,
+                        "Reserva no encontrada en este hostal"
+                ));
+
+        if ("CANCELADA".equals(reserva.getEstado())) {
+            return convertir(reserva);
+        }
+
+        if (!"CONFIRMADA".equals(reserva.getEstado())) {
+            throw error(
+                    HttpStatus.CONFLICT,
+                    "Solo se pueden cancelar reservas confirmadas"
+            );
+        }
+
+        int actualizadas = reservaRepository.cancelarConfirmada(
+                reservaId, empresaId, hostalId
+        );
+
+        Reserva resultado = reservaRepository
+                .findByReservaIdAndEmpresaIdAndHostalId(
+                        reservaId, empresaId, hostalId
+                )
+                .orElseThrow(() -> error(
+                        HttpStatus.NOT_FOUND,
+                        "Reserva no encontrada en este hostal"
+                ));
+
+        if (actualizadas == 0 && !"CANCELADA".equals(resultado.getEstado())) {
+            throw error(
+                    HttpStatus.CONFLICT,
+                    "La reserva cambió de estado y no se pudo cancelar"
+            );
+        }
+
+        return convertir(resultado);
+    }
+
+    @Override
+    public ReservaResponseDto registrarCheckIn(
+            Long empresaId, Long hostalId, Long reservaId
+    ) {
+        Reserva reserva = obtenerParaOperacion(
+                empresaId, hostalId, reservaId
+        );
+
+        // Repetir la misma operación no modifica nuevamente la reserva.
+        if ("EN_CURSO".equals(reserva.getEstado())) {
+            return convertir(reserva);
+        }
+
+        if (!"CONFIRMADA".equals(reserva.getEstado())) {
+            throw error(
+                    HttpStatus.CONFLICT,
+                    "Solo se puede registrar el check-in de una reserva confirmada"
+            );
+        }
+
+        OffsetDateTime ahora = OffsetDateTime.now();
+
+        if (ahora.isBefore(reserva.getEntrada())) {
+            throw error(
+                    HttpStatus.CONFLICT,
+                    "Todavía no llegó la fecha y hora de entrada"
+            );
+        }
+
+        if (!ahora.isBefore(reserva.getSalida())) {
+            throw error(
+                    HttpStatus.CONFLICT,
+                    "El período de la reserva ya terminó"
+            );
+        }
+
+        return aplicarCambioEstado(reserva, "CONFIRMADA", "EN_CURSO");
+    }
+
+    @Override
+    public ReservaResponseDto registrarCheckOut(
+            Long empresaId, Long hostalId, Long reservaId
+    ) {
+        Reserva reserva = obtenerParaOperacion(
+                empresaId, hostalId, reservaId
+        );
+
+        if ("FINALIZADA".equals(reserva.getEstado())) {
+            return convertir(reserva);
+        }
+
+        if (!"EN_CURSO".equals(reserva.getEstado())) {
+            throw error(
+                    HttpStatus.CONFLICT,
+                    "Solo se puede registrar el check-out de una reserva en curso"
+            );
+        }
+
+        return aplicarCambioEstado(reserva, "EN_CURSO", "FINALIZADA");
+    }
+
+    private Reserva obtenerParaOperacion(
+            Long empresaId, Long hostalId, Long reservaId
+    ) {
+        validarId(reservaId, "reserva");
+        validarHostal(empresaId, hostalId);
+
+        return reservaRepository
+                .findByReservaIdAndEmpresaIdAndHostalId(
+                        reservaId, empresaId, hostalId
+                )
+                .orElseThrow(() -> error(
+                        HttpStatus.NOT_FOUND,
+                        "Reserva no encontrada en este hostal"
+                ));
+    }
+
+    private ReservaResponseDto aplicarCambioEstado(
+            Reserva reserva, String estadoActual, String estadoNuevo
+    ) {
+        int actualizadas = reservaRepository.cambiarEstado(
+                reserva.getReservaId(),
+                reserva.getEmpresaId(),
+                reserva.getHostalId(),
+                estadoActual,
+                estadoNuevo,
+                OffsetDateTime.now()
+        );
+
+        Reserva resultado = reservaRepository
+                .findByReservaIdAndEmpresaIdAndHostalId(
+                        reserva.getReservaId(),
+                        reserva.getEmpresaId(),
+                        reserva.getHostalId()
+                )
+                .orElseThrow(() -> error(
+                        HttpStatus.NOT_FOUND,
+                        "Reserva no encontrada en este hostal"
+                ));
+
+        if (actualizadas == 0
+                && !estadoNuevo.equals(resultado.getEstado())) {
+            throw error(
+                    HttpStatus.CONFLICT,
+                    "La reserva cambió de estado. Consulta sus datos nuevamente"
+            );
+        }
+
+        return convertir(resultado);
+    }
+
+    @Override
+    public DisponibilidadResponseDto consultarDisponibilidad(
+            Long empresaId,
+            Long hostalId,
+            Long habitacionId,
+            OffsetDateTime entrada,
+            OffsetDateTime salida
+    ) {
+        validarId(habitacionId, "habitación");
+
+        if (entrada == null || salida == null || !salida.isAfter(entrada)) {
+            throw error(
+                    HttpStatus.BAD_REQUEST,
+                    "La entrada y salida son obligatorias y la salida debe ser posterior"
+            );
+        }
+
+        HostalResumenDto hostal = validarHostal(empresaId, hostalId);
+
+        // Aplica la misma regla de al menos una noche del registro.
+        calcularNoches(
+                ReservaDto.builder()
+                        .entrada(entrada)
+                        .salida(salida)
+                        .build(),
+                hostal
+        );
+
+        HabitacionResumenDto habitacion = consultar(
+                () -> habitacionClient.buscarHabitacion(
+                        empresaId, hostalId, habitacionId
+                ),
+                "Habitación"
+        );
+
+        if (habitacion == null
+                || !Objects.equals(habitacion.getEmpresaId(), empresaId)
+                || !Objects.equals(habitacion.getHostalId(), hostalId)
+                || !Objects.equals(habitacion.getHabitacionId(), habitacionId)
+                || habitacion.getTipoHabitacionId() == null) {
+            throw error(
+                    HttpStatus.BAD_GATEWAY,
+                    "El servicio devolvió una habitación inesperada"
+            );
+        }
+
+        TipoHabitacionResumenDto tipo = consultar(
+                () -> habitacionClient.buscarTipoHabitacion(
+                        empresaId, hostalId, habitacion.getTipoHabitacionId()
+                ),
+                "Tipo de habitación"
+        );
+
+        if (tipo == null
+                || !Objects.equals(tipo.getEmpresaId(), empresaId)
+                || !Objects.equals(tipo.getHostalId(), hostalId)
+                || !Objects.equals(
+                tipo.getTipoHabitacionId(),
+                habitacion.getTipoHabitacionId()
+        )) {
+            throw error(
+                    HttpStatus.BAD_GATEWAY,
+                    "El servicio devolvió un tipo de habitación inesperado"
+            );
+        }
+
+        boolean disponible = false;
+        String motivo;
+
+        if (!"HABILITADA".equals(habitacion.getEstadoOperativo())) {
+            motivo = "La habitación no está habilitada";
+        } else if (!Boolean.TRUE.equals(tipo.getEstado())) {
+            motivo = "El tipo de habitación está inactivo";
+        } else if (reservaRepository.existeCruce(
+                empresaId, hostalId, habitacionId, entrada, salida
+        )) {
+            motivo = "La habitación tiene una reserva en ese intervalo";
+        } else {
+            disponible = true;
+            motivo = "Habitación disponible en el intervalo consultado";
+        }
+
+        return DisponibilidadResponseDto.builder()
+                .empresaId(empresaId)
+                .hostalId(hostalId)
+                .habitacionId(habitacionId)
+                .entrada(entrada)
+                .salida(salida)
+                .disponible(disponible)
+                .motivo(motivo)
+                .build();
+    }
+    @Override
+    public List<HabitacionDisponibleDto> listarHabitacionesDisponibles(
+            Long empresaId,
+            Long hostalId,
+            OffsetDateTime entrada,
+            OffsetDateTime salida,
+            Integer cantidadPersonas
+    ) {
+        if (entrada == null || salida == null || !salida.isAfter(entrada)) {
+            throw error(
+                    HttpStatus.BAD_REQUEST,
+                    "La salida debe ser posterior a la entrada"
+            );
+        }
+
+        if (cantidadPersonas == null || cantidadPersonas <= 0) {
+            throw error(
+                    HttpStatus.BAD_REQUEST,
+                    "La cantidad de personas debe ser positiva"
+            );
+        }
+
+        HostalResumenDto hostal = validarHostal(empresaId, hostalId);
+
+        long noches = calcularNoches(
+                ReservaDto.builder()
+                        .entrada(entrada)
+                        .salida(salida)
+                        .build(),
+                hostal
+        );
+
+        List<HabitacionResumenDto> habitaciones = consultar(
+                () -> habitacionClient.listarHabitaciones(empresaId, hostalId),
+                "Habitaciones"
+        );
+
+        List<TipoHabitacionResumenDto> tipos = consultar(
+                () -> habitacionClient.listarTiposHabitacion(empresaId, hostalId),
+                "Tipos de habitación"
+        );
+
+        if (habitaciones == null || tipos == null) {
+            throw error(
+                    HttpStatus.BAD_GATEWAY,
+                    "El servicio de habitaciones devolvió una respuesta inválida"
+            );
+        }
+
+        Map<Long, TipoHabitacionResumenDto> tiposPorId = new HashMap<>();
+
+        for (TipoHabitacionResumenDto tipo : tipos) {
+            if (tipo == null
+                    || tipo.getTipoHabitacionId() == null
+                    || !Objects.equals(tipo.getEmpresaId(), empresaId)
+                    || !Objects.equals(tipo.getHostalId(), hostalId)) {
+                throw error(
+                        HttpStatus.BAD_GATEWAY,
+                        "El servicio devolvió un tipo de habitación inesperado"
+                );
+            }
+
+            if (tiposPorId.putIfAbsent(
+                    tipo.getTipoHabitacionId(), tipo
+            ) != null) {
+                throw error(
+                        HttpStatus.BAD_GATEWAY,
+                        "El servicio devolvió tipos de habitación duplicados"
+                );
+            }
+        }
+
+        Set<Long> ocupadas = new HashSet<>(
+                reservaRepository.buscarHabitacionesConCruce(
+                        empresaId, hostalId, entrada, salida
+                )
+        );
+
+        List<HabitacionDisponibleDto> disponibles = new ArrayList<>();
+
+        for (HabitacionResumenDto habitacion : habitaciones) {
+            if (habitacion == null
+                    || habitacion.getHabitacionId() == null
+                    || habitacion.getTipoHabitacionId() == null
+                    || habitacion.getNumero() == null
+                    || !Objects.equals(habitacion.getEmpresaId(), empresaId)
+                    || !Objects.equals(habitacion.getHostalId(), hostalId)) {
+                throw error(
+                        HttpStatus.BAD_GATEWAY,
+                        "El servicio devolvió una habitación inesperada"
+                );
+            }
+
+            if (!"HABILITADA".equals(habitacion.getEstadoOperativo())
+                    || ocupadas.contains(habitacion.getHabitacionId())) {
+                continue;
+            }
+
+            TipoHabitacionResumenDto tipo = tiposPorId.get(
+                    habitacion.getTipoHabitacionId()
+            );
+
+            if (tipo == null) {
+                throw error(
+                        HttpStatus.BAD_GATEWAY,
+                        "No se recibió el tipo de una habitación"
+                );
+            }
+
+            if (!Boolean.TRUE.equals(tipo.getEstado())) {
+                continue;
+            }
+
+            if (tipo.getCapacidad() == null || tipo.getCapacidad() <= 0
+                    || tipo.getPrecioNoche() == null
+                    || tipo.getPrecioNoche().signum() < 0) {
+                throw error(
+                        HttpStatus.BAD_GATEWAY,
+                        "El tipo de habitación tiene capacidad o tarifa inválida"
+                );
+            }
+
+            if (tipo.getCapacidad() < cantidadPersonas) {
+                continue;
+            }
+
+            BigDecimal total = tipo.getPrecioNoche()
+                    .multiply(BigDecimal.valueOf(noches))
+                    .setScale(2, RoundingMode.HALF_UP);
+
+            disponibles.add(
+                    HabitacionDisponibleDto.builder()
+                            .habitacionId(habitacion.getHabitacionId())
+                            .tipoHabitacionId(tipo.getTipoHabitacionId())
+                            .numero(habitacion.getNumero())
+                            .tipo(tipo.getNombre())
+                            .capacidad(tipo.getCapacidad())
+                            .precioNoche(tipo.getPrecioNoche())
+                            .noches(noches)
+                            .totalEstimado(total)
+                            .moneda(hostal.getMoneda())
+                            .build()
+            );
+        }
+
+        disponibles.sort(
+                Comparator.comparing(HabitacionDisponibleDto::getPrecioNoche)
+                        .thenComparing(HabitacionDisponibleDto::getNumero)
+        );
+
+        return disponibles;
+    }
+
+
 }

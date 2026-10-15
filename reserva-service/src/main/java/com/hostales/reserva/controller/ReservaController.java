@@ -13,6 +13,12 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PatchMapping;
+import com.hostales.reserva.bean.dto.DisponibilidadResponseDto;
+import java.time.OffsetDateTime;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.web.bind.annotation.RequestParam;
+import com.hostales.reserva.bean.dto.HabitacionDisponibleDto;
 
 import java.util.List;
 
@@ -49,4 +55,70 @@ public class ReservaController {
     ) {
         return reservaUseCase.buscarReserva(empresaId, hostalId, reservaId);
     }
+
+    @PatchMapping("/{reservaId}/cancelar")
+    public ReservaResponseDto cancelar(
+            @PathVariable("empresaId") Long empresaId,
+            @PathVariable("hostalId") Long hostalId,
+            @PathVariable("reservaId") Long reservaId
+    ) {
+        return reservaUseCase.cancelarReserva(
+                empresaId, hostalId, reservaId
+        );
+    }
+    @PatchMapping("/{reservaId}/check-in")
+    public ReservaResponseDto checkIn(
+            @PathVariable("empresaId") Long empresaId,
+            @PathVariable("hostalId") Long hostalId,
+            @PathVariable("reservaId") Long reservaId
+    ) {
+        return reservaUseCase.registrarCheckIn(
+                empresaId, hostalId, reservaId
+        );
+    }
+
+    @PatchMapping("/{reservaId}/check-out")
+    public ReservaResponseDto checkOut(
+            @PathVariable("empresaId") Long empresaId,
+            @PathVariable("hostalId") Long hostalId,
+            @PathVariable("reservaId") Long reservaId
+    ) {
+        return reservaUseCase.registrarCheckOut(
+                empresaId, hostalId, reservaId
+        );
+    }
+    @GetMapping("/disponibilidad")
+    public DisponibilidadResponseDto disponibilidad(
+            @PathVariable("empresaId") Long empresaId,
+            @PathVariable("hostalId") Long hostalId,
+            @RequestParam("habitacionId") Long habitacionId,
+            @RequestParam("entrada")
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+            OffsetDateTime entrada,
+            @RequestParam("salida")
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+            OffsetDateTime salida
+    ) {
+        return reservaUseCase.consultarDisponibilidad(
+                empresaId, hostalId, habitacionId, entrada, salida
+        );
+    }
+    @GetMapping("/habitaciones-disponibles")
+    public List<HabitacionDisponibleDto> habitacionesDisponibles(
+            @PathVariable("empresaId") Long empresaId,
+            @PathVariable("hostalId") Long hostalId,
+            @RequestParam("entrada")
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+            OffsetDateTime entrada,
+            @RequestParam("salida")
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+            OffsetDateTime salida,
+            @RequestParam(value = "cantidadPersonas", defaultValue = "1")
+            Integer cantidadPersonas
+    ) {
+        return reservaUseCase.listarHabitacionesDisponibles(
+                empresaId, hostalId, entrada, salida, cantidadPersonas
+        );
+    }
+
 }

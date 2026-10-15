@@ -79,4 +79,10 @@ public class Reserva implements Serializable {
     public int hashCode() {
         return Reserva.class.hashCode();
     }
+
+    @Column(name = "entrada_real")
+    private OffsetDateTime entradaReal;
+
+    @Column(name = "salida_real")
+    private OffsetDateTime salidaReal;
 }

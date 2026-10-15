@@ -24,4 +24,6 @@ public class ReservaResponseDto {
     private String origen;
     private String observaciones;
     private OffsetDateTime creadoEn;
+    private OffsetDateTime entradaReal;
+    private OffsetDateTime salidaReal;
 }

@@ -5,6 +5,7 @@ import com.hostales.reserva.bean.dto.TipoHabitacionResumenDto;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import java.util.List;
 
 @FeignClient(
         name = "habitacion-service",
@@ -28,5 +29,16 @@ public interface HabitacionClient {
             @PathVariable("empresaId") Long empresaId,
             @PathVariable("hostalId") Long hostalId,
             @PathVariable("tipoHabitacionId") Long tipoHabitacionId
+    );
+    @GetMapping("/api/empresas/{empresaId}/hostales/{hostalId}/habitaciones")
+    List<HabitacionResumenDto> listarHabitaciones(
+            @PathVariable("empresaId") Long empresaId,
+            @PathVariable("hostalId") Long hostalId
+    );
+
+    @GetMapping("/api/empresas/{empresaId}/hostales/{hostalId}/tipos-habitacion")
+    List<TipoHabitacionResumenDto> listarTiposHabitacion(
+            @PathVariable("empresaId") Long empresaId,
+            @PathVariable("hostalId") Long hostalId
     );
 }

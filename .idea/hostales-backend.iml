@@ -6,6 +6,8 @@
       <sourceFolder url="file://$MODULE_DIR$/habitacion-service" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/hostal-service" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/reserva-service" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/auth-service" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/pago-service" isTestSource="false" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
