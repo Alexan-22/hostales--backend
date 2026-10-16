@@ -1,14 +1,19 @@
 package com.hostales.pago.model;
 
-import com.hostales.pago.bean.dto.*;
+import com.hostales.pago.bean.dto.AnularPagoDto;
+import com.hostales.pago.bean.dto.PagoDto;
+import com.hostales.pago.bean.dto.PagoResponseDto;
+import com.hostales.pago.bean.dto.ReservaResumenDto;
+import com.hostales.pago.bean.dto.SaldoReservaDto;
 import com.hostales.pago.bean.entity.Pago;
 import com.hostales.pago.persistence.PagoRepository;
 import com.hostales.pago.usecase.PagoUseCase;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Validator;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.TransactionException;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
@@ -17,6 +22,7 @@ import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -25,6 +31,7 @@ public class PagoModel implements PagoUseCase {
     private final PagoRepository pagoRepository;
     private final ReservaValidator reservaValidator;
     private final PagoBloqueo pagoBloqueo;
+    private final Validator validator;
 
     @Override
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -35,28 +42,16 @@ public class PagoModel implements PagoUseCase {
             PagoDto dto
     ) {
         validarIds(empresaId, hostalId, reservaId);
+        validarDto(dto);
 
-        if (dto == null
-                || dto.getClaveOperacion() == null
-                || dto.getMonto() == null
-                || dto.getMonto().signum() <= 0) {
-
-            throw error(
-                    HttpStatus.BAD_REQUEST,
-                    "La clave de operación y un monto positivo son obligatorios"
-            );
-        }
-
-        String metodo = dto.getMetodo().trim().toUpperCase();
+        String metodo = dto.getMetodo();
         String referencia = normalizar(dto.getReferencia());
         String observaciones = normalizar(dto.getObservaciones());
 
         validarReferencia(metodo, referencia);
 
-        bloquear(
-                "pago:operacion:"
-                        + empresaId + ":"
-                        + dto.getClaveOperacion()
+        pagoBloqueo.bloquear(
+                "pago:operacion:" + empresaId + ":" + dto.getClaveOperacion()
         );
 
         Pago existente = pagoRepository
@@ -72,7 +67,6 @@ public class PagoModel implements PagoUseCase {
                     hostalId,
                     reservaId,
                     dto,
-                    metodo,
                     referencia,
                     observaciones
             );
@@ -80,12 +74,7 @@ public class PagoModel implements PagoUseCase {
             return convertir(existente);
         }
 
-        bloquear(
-                "pago:reserva:"
-                        + empresaId + ":"
-                        + hostalId + ":"
-                        + reservaId
-        );
+        bloquearReserva(empresaId, hostalId, reservaId);
 
         ReservaResumenDto reserva = reservaValidator.consultar(
                 empresaId,
@@ -95,15 +84,13 @@ public class PagoModel implements PagoUseCase {
 
         reservaValidator.validarPermitePago(reserva);
 
-        BigDecimal totalPagado =
-                pagoRepository.sumarPagosRegistrados(
-                        empresaId,
-                        hostalId,
-                        reservaId
-                );
+        BigDecimal totalPagado = pagoRepository.sumarPagosRegistrados(
+                empresaId,
+                hostalId,
+                reservaId
+        );
 
-        BigDecimal saldo = reserva.getTotal()
-                .subtract(totalPagado);
+        BigDecimal saldo = reserva.getTotal().subtract(totalPagado);
 
         if (saldo.signum() <= 0) {
             throw error(
@@ -116,8 +103,7 @@ public class PagoModel implements PagoUseCase {
             throw error(
                     HttpStatus.CONFLICT,
                     "El monto supera el saldo pendiente de "
-                            + saldo.toPlainString() + " "
-                            + reserva.getMoneda()
+                            + saldo.toPlainString() + " " + reserva.getMoneda()
             );
         }
 
@@ -134,17 +120,7 @@ public class PagoModel implements PagoUseCase {
                 .estado("REGISTRADO")
                 .build();
 
-        try {
-            return convertir(
-                    pagoRepository.saveAndFlush(pago)
-            );
-        } catch (DataIntegrityViolationException ex) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT,
-                    "No se pudo registrar el pago por un conflicto de datos",
-                    ex
-            );
-        }
+        return convertir(pagoRepository.saveAndFlush(pago));
     }
 
     @Override
@@ -156,11 +132,7 @@ public class PagoModel implements PagoUseCase {
     ) {
         validarIds(empresaId, hostalId, reservaId);
 
-        reservaValidator.consultar(
-                empresaId,
-                hostalId,
-                reservaId
-        );
+        reservaValidator.consultar(empresaId, hostalId, reservaId);
 
         return pagoRepository
                 .findByEmpresaIdAndHostalIdAndReservaIdOrderByPagadoEnAscPagoIdAsc(
@@ -188,16 +160,13 @@ public class PagoModel implements PagoUseCase {
                 reservaId
         );
 
-        BigDecimal totalPagado =
-                pagoRepository.sumarPagosRegistrados(
-                        empresaId,
-                        hostalId,
-                        reservaId
-                );
+        BigDecimal totalPagado = pagoRepository.sumarPagosRegistrados(
+                empresaId,
+                hostalId,
+                reservaId
+        );
 
-        BigDecimal saldo = reserva.getTotal()
-                .subtract(totalPagado)
-                .max(BigDecimal.ZERO);
+        BigDecimal diferencia = reserva.getTotal().subtract(totalPagado);
 
         return SaldoReservaDto.builder()
                 .empresaId(empresaId)
@@ -206,7 +175,8 @@ public class PagoModel implements PagoUseCase {
                 .moneda(reserva.getMoneda())
                 .totalReserva(reserva.getTotal())
                 .totalPagado(totalPagado)
-                .saldoPendiente(saldo)
+                .saldoPendiente(diferencia.max(BigDecimal.ZERO))
+                .saldoAFavor(diferencia.negate().max(BigDecimal.ZERO))
                 .build();
     }
 
@@ -228,31 +198,10 @@ public class PagoModel implements PagoUseCase {
             );
         }
 
-        if (dto == null
-                || dto.getMotivo() == null
-                || dto.getMotivo().isBlank()) {
+        validarDto(dto);
+        String motivo = dto.getMotivo().strip();
 
-            throw error(
-                    HttpStatus.BAD_REQUEST,
-                    "El motivo de anulación es obligatorio"
-            );
-        }
-
-        String motivo = dto.getMotivo().trim();
-
-        if (motivo.length() > 500) {
-            throw error(
-                    HttpStatus.BAD_REQUEST,
-                    "El motivo admite hasta 500 caracteres"
-            );
-        }
-
-        bloquear(
-                "pago:reserva:"
-                        + empresaId + ":"
-                        + hostalId + ":"
-                        + reservaId
-        );
+        bloquearReserva(empresaId, hostalId, reservaId);
 
         Pago pago = pagoRepository
                 .findByPagoIdAndEmpresaIdAndHostalIdAndReservaId(
@@ -267,10 +216,7 @@ public class PagoModel implements PagoUseCase {
                 ));
 
         if ("ANULADO".equals(pago.getEstado())) {
-            if (!Objects.equals(
-                    pago.getMotivoAnulacion(),
-                    motivo
-            )) {
+            if (!Objects.equals(pago.getMotivoAnulacion(), motivo)) {
                 throw error(
                         HttpStatus.CONFLICT,
                         "El pago ya fue anulado con otro motivo"
@@ -287,45 +233,26 @@ public class PagoModel implements PagoUseCase {
             );
         }
 
-        reservaValidator.consultar(
-                empresaId,
-                hostalId,
-                reservaId
-        );
+        reservaValidator.consultar(empresaId, hostalId, reservaId);
 
         pago.setEstado("ANULADO");
         pago.setAnuladoEn(OffsetDateTime.now());
         pago.setMotivoAnulacion(motivo);
 
-        try {
-            return convertir(
-                    pagoRepository.saveAndFlush(pago)
-            );
-        } catch (DataIntegrityViolationException ex) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT,
-                    "No se pudo anular el pago",
-                    ex
-            );
-        }
+        return convertir(pagoRepository.saveAndFlush(pago));
     }
 
-    private void bloquear(String clave) {
-        try {
-            pagoBloqueo.bloquear(clave);
-        } catch (TransactionException ex) {
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "No se pudo iniciar la operación de pago",
-                    ex
-            );
-        } catch (RuntimeException ex) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT,
-                    "Otra operación de pago está siendo procesada",
-                    ex
-            );
-        }
+    private void bloquearReserva(
+            Long empresaId,
+            Long hostalId,
+            Long reservaId
+    ) {
+        pagoBloqueo.bloquear(
+                "pago:reserva:"
+                        + empresaId + ":"
+                        + hostalId + ":"
+                        + reservaId
+        );
     }
 
     private void validarIdempotencia(
@@ -333,22 +260,20 @@ public class PagoModel implements PagoUseCase {
             Long hostalId,
             Long reservaId,
             PagoDto dto,
-            String metodo,
             String referencia,
             String observaciones
     ) {
         boolean iguales =
                 Objects.equals(existente.getHostalId(), hostalId)
                         && Objects.equals(existente.getReservaId(), reservaId)
-                        && existente.getMonto()
-                        .compareTo(dto.getMonto()) == 0
-                        && Objects.equals(existente.getMetodo(), metodo)
+                        && existente.getMonto().compareTo(dto.getMonto()) == 0
+                        && Objects.equals(existente.getMetodo(), dto.getMetodo())
                         && Objects.equals(
-                        existente.getReferencia(),
+                        normalizar(existente.getReferencia()),
                         referencia
                 )
                         && Objects.equals(
-                        existente.getObservaciones(),
+                        normalizar(existente.getObservaciones()),
                         observaciones
                 );
 
@@ -360,21 +285,27 @@ public class PagoModel implements PagoUseCase {
         }
     }
 
-    private void validarReferencia(
-            String metodo,
-            String referencia
-    ) {
-        boolean requerida =
-                "YAPE".equals(metodo)
-                        || "PLIN".equals(metodo)
-                        || "TARJETA".equals(metodo)
-                        || "TRANSFERENCIA".equals(metodo);
-
-        if (requerida && referencia == null) {
+    private void validarReferencia(String metodo, String referencia) {
+        if (!"EFECTIVO".equals(metodo) && referencia == null) {
             throw error(
                     HttpStatus.BAD_REQUEST,
                     "La referencia es obligatoria para " + metodo
             );
+        }
+    }
+
+    private <T> void validarDto(T dto) {
+        if (dto == null) {
+            throw error(
+                    HttpStatus.BAD_REQUEST,
+                    "El cuerpo de la solicitud es obligatorio"
+            );
+        }
+
+        Set<ConstraintViolation<T>> violaciones = validator.validate(dto);
+
+        if (!violaciones.isEmpty()) {
+            throw new ConstraintViolationException(violaciones);
         }
     }
 
@@ -386,7 +317,6 @@ public class PagoModel implements PagoUseCase {
         if (empresaId == null || empresaId <= 0
                 || hostalId == null || hostalId <= 0
                 || reservaId == null || reservaId <= 0) {
-
             throw error(
                     HttpStatus.BAD_REQUEST,
                     "Los identificadores deben ser positivos"
@@ -395,19 +325,14 @@ public class PagoModel implements PagoUseCase {
     }
 
     private String normalizar(String valor) {
-        return valor == null || valor.isBlank()
-                ? null
-                : valor.trim();
+        return valor == null || valor.isBlank() ? null : valor.strip();
     }
 
     private ResponseStatusException error(
             HttpStatus estado,
             String mensaje
     ) {
-        return new ResponseStatusException(
-                estado,
-                mensaje
-        );
+        return new ResponseStatusException(estado, mensaje);
     }
 
     private PagoResponseDto convertir(Pago pago) {

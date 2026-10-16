@@ -22,4 +22,5 @@ public class SaldoReservaDto {
     private BigDecimal totalReserva;
     private BigDecimal totalPagado;
     private BigDecimal saldoPendiente;
+    private BigDecimal saldoAFavor;
 }

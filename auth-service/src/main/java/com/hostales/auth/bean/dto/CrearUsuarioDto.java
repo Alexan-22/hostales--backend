@@ -38,5 +38,7 @@ public class CrearUsuarioDto {
     private NombreRol rol;
 
     @Builder.Default
-    private Set<@Positive Long> hostalesIds = new HashSet<>();
+    @NotNull(message = "La lista de hostales es obligatoria")
+    @Size(max = 100, message = "Se permiten hasta 100 hostales por solicitud")
+    private Set<@NotNull @Positive Long> hostalesIds = new HashSet<>();
 }

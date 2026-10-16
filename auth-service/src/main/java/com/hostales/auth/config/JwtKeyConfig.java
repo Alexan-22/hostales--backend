@@ -1,5 +1,6 @@
 package com.hostales.auth.config;
 
+import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
@@ -10,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.Resource;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
@@ -40,11 +42,8 @@ public class JwtKeyConfig {
 
         byte[] bytes = Base64.getDecoder().decode(contenido);
 
-        return (RSAPublicKey) KeyFactory
-                .getInstance("RSA")
-                .generatePublic(
-                        new X509EncodedKeySpec(bytes)
-                );
+        return (RSAPublicKey) KeyFactory.getInstance("RSA")
+                .generatePublic(new X509EncodedKeySpec(bytes));
     }
 
     @Bean
@@ -57,11 +56,8 @@ public class JwtKeyConfig {
 
         byte[] bytes = Base64.getDecoder().decode(contenido);
 
-        return (RSAPrivateKey) KeyFactory
-                .getInstance("RSA")
-                .generatePrivate(
-                        new PKCS8EncodedKeySpec(bytes)
-                );
+        return (RSAPrivateKey) KeyFactory.getInstance("RSA")
+                .generatePrivate(new PKCS8EncodedKeySpec(bytes));
     }
 
     @Bean
@@ -75,20 +71,25 @@ public class JwtKeyConfig {
                 .build();
 
         JWKSource<SecurityContext> fuente =
-                new ImmutableJWKSet<>(
-                        new com.nimbusds.jose.jwk.JWKSet(rsaKey)
-                );
+                new ImmutableJWKSet<>(new JWKSet(rsaKey));
 
         return new NimbusJwtEncoder(fuente);
     }
 
     @Bean
     public JwtDecoder jwtDecoder(
-            RSAPublicKey publicKey
+            RSAPublicKey publicKey,
+            @Value("${jwt.issuer}") String issuer
     ) {
-        return NimbusJwtDecoder
+        NimbusJwtDecoder decoder = NimbusJwtDecoder
                 .withPublicKey(publicKey)
                 .build();
+
+        decoder.setJwtValidator(
+                JwtValidators.createDefaultWithIssuer(issuer)
+        );
+
+        return decoder;
     }
 }
 

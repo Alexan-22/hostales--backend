@@ -1,6 +1,8 @@
 package com.hostales.auth.model;
 
-import com.hostales.auth.bean.dto.*;
+import com.hostales.auth.bean.dto.LoginDto;
+import com.hostales.auth.bean.dto.LoginResponseDto;
+import com.hostales.auth.bean.dto.UsuarioSesionDto;
 import com.hostales.auth.bean.entity.Usuario;
 import com.hostales.auth.bean.entity.UsuarioHostal;
 import com.hostales.auth.persistence.UsuarioHostalRepository;
@@ -17,7 +19,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -34,52 +39,44 @@ public class AuthModel implements AuthUseCase {
     @Override
     @Transactional(readOnly = true)
     public LoginResponseDto login(LoginDto dto) {
-        String correo = dto.getCorreo()
-                .trim()
-                .toLowerCase();
+        if (dto == null
+                || dto.getCorreo() == null
+                || dto.getCorreo().isBlank()
+                || dto.getPassword() == null
+                || dto.getPassword().isBlank()) {
+            throw credencialesInvalidas();
+        }
+
+        if (dto.getPassword().getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw credencialesInvalidas();
+        }
+
+        String correo = dto.getCorreo().strip().toLowerCase(Locale.ROOT);
 
         Usuario usuario = usuarioRepository
                 .findByCorreoIgnoreCase(correo)
                 .orElseThrow(this::credencialesInvalidas);
 
-        if (!Boolean.TRUE.equals(usuario.getEstado())) {
-            throw new ResponseStatusException(
-                    HttpStatus.FORBIDDEN,
-                    "El usuario está inactivo"
-            );
-        }
-
-        if (!passwordEncoder.matches(
+        boolean passwordValida = passwordEncoder.matches(
                 dto.getPassword(),
                 usuario.getPasswordHash()
-        )) {
+        );
+
+        if (!passwordValida || !Boolean.TRUE.equals(usuario.getEstado())) {
             throw credencialesInvalidas();
         }
 
-        hostalValidator.validarEmpresaActiva(
-                usuario.getEmpresaId()
-        );
+        hostalValidator.validarEmpresaActiva(usuario.getEmpresaId());
 
         Set<Long> hostales = obtenerHostales(usuario);
 
-        String token = jwtService.generarToken(
-                usuario,
-                hostales
-        );
-
         return LoginResponseDto.builder()
-                .accessToken(token)
+                .accessToken(jwtService.generarToken(usuario, hostales))
                 .tokenType("Bearer")
-                .expiresIn(
-                        jwtService.obtenerExpiracionSegundos()
-                )
+                .expiresIn(jwtService.obtenerExpiracionSegundos())
                 .usuarioId(usuario.getUsuarioId())
                 .empresaId(usuario.getEmpresaId())
-                .nombreCompleto(
-                        usuario.getNombre()
-                                + " "
-                                + usuario.getApellido()
-                )
+                .nombreCompleto(nombreCompleto(usuario))
                 .correo(usuario.getCorreo())
                 .rol(usuario.getRol().getNombre())
                 .hostalesPermitidos(hostales)
@@ -87,32 +84,92 @@ public class AuthModel implements AuthUseCase {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public UsuarioSesionDto obtenerSesionActual() {
-        Authentication autenticacion =
-                SecurityContextHolder
-                        .getContext()
-                        .getAuthentication();
+        Authentication authentication = SecurityContextHolder
+                .getContext()
+                .getAuthentication();
 
-        if (autenticacion == null
-                || !(autenticacion.getPrincipal() instanceof Jwt jwt)) {
-            throw new ResponseStatusException(
-                    HttpStatus.UNAUTHORIZED,
-                    "No existe una sesión autenticada"
-            );
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || !(authentication.getPrincipal() instanceof Jwt jwt)) {
+            throw sesionInvalida();
         }
 
-        Set<Long> hostales = new LinkedHashSet<>();
+        Long usuarioId = obtenerId(jwt, "usuarioId");
+        Long empresaId = obtenerId(jwt, "empresaId");
 
-        Object claim = jwt.getClaim("hostales");
+        Usuario usuario = usuarioRepository
+                .findByUsuarioIdAndEmpresaId(usuarioId, empresaId)
+                .orElseThrow(this::sesionInvalida);
 
-        if (claim instanceof Iterable<?> valores) {
-            for (Object valor : valores) {
-                if (valor instanceof Number numero) {
-                    hostales.add(numero.longValue());
-                }
-            }
+        if (!Boolean.TRUE.equals(usuario.getEstado())
+                || !Objects.equals(
+                usuario.getRol().getNombre().name(),
+                jwt.getClaimAsString("rol")
+        )) {
+            throw sesionInvalida();
         }
+
+        hostalValidator.validarEmpresaActiva(empresaId);
 
         return UsuarioSesionDto.builder()
-                .usuarioId(
+                .usuarioId(usuario.getUsuarioId())
+                .empresaId(usuario.getEmpresaId())
+                .nombreCompleto(nombreCompleto(usuario))
+                .correo(usuario.getCorreo())
+                .rol(usuario.getRol().getNombre())
+                .hostalesPermitidos(obtenerHostales(usuario))
+                .build();
+    }
 
+    private Set<Long> obtenerHostales(Usuario usuario) {
+        return usuarioHostalRepository
+                .findByEmpresaIdAndUsuarioIdOrderByHostalIdAsc(
+                        usuario.getEmpresaId(),
+                        usuario.getUsuarioId()
+                )
+                .stream()
+                .map(UsuarioHostal::getHostalId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private Long obtenerId(Jwt jwt, String nombre) {
+        Object valor = jwt.getClaims().get(nombre);
+
+        if (!(valor instanceof Number numero)) {
+            throw sesionInvalida();
+        }
+
+        try {
+            long id = new java.math.BigDecimal(numero.toString())
+                    .longValueExact();
+
+            if (id <= 0) {
+                throw sesionInvalida();
+            }
+
+            return id;
+        } catch (NumberFormatException | ArithmeticException ex) {
+            throw sesionInvalida();
+        }
+    }
+
+    private String nombreCompleto(Usuario usuario) {
+        return usuario.getNombre() + " " + usuario.getApellido();
+    }
+
+    private ResponseStatusException credencialesInvalidas() {
+        return new ResponseStatusException(
+                HttpStatus.UNAUTHORIZED,
+                "Correo o contraseña incorrectos"
+        );
+    }
+
+    private ResponseStatusException sesionInvalida() {
+        return new ResponseStatusException(
+                HttpStatus.UNAUTHORIZED,
+                "La sesión ya no es válida. Inicia sesión nuevamente"
+        );
+    }
+}

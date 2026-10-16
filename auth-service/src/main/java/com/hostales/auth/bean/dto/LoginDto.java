@@ -22,5 +22,7 @@ public class LoginDto {
             max = 100,
             message = "La contraseña debe tener entre 8 y 100 caracteres"
     )
+
+    @ToString.Exclude
     private String password;
 }

@@ -1,9 +1,17 @@
 package com.hostales.auth.model;
 
-import com.hostales.auth.bean.dto.*;
-import com.hostales.auth.bean.entity.*;
-import com.hostales.auth.persistence.*;
+import com.hostales.auth.bean.dto.CambiarEstadoUsuarioDto;
+import com.hostales.auth.bean.dto.CrearUsuarioDto;
+import com.hostales.auth.bean.dto.UsuarioResponseDto;
+import com.hostales.auth.bean.entity.Rol;
+import com.hostales.auth.bean.entity.Usuario;
+import com.hostales.auth.bean.entity.UsuarioHostal;
+import com.hostales.auth.persistence.RolRepository;
+import com.hostales.auth.persistence.UsuarioHostalRepository;
+import com.hostales.auth.persistence.UsuarioRepository;
 import com.hostales.auth.usecase.UsuarioUseCase;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -12,8 +20,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -26,6 +36,7 @@ public class UsuarioModel implements UsuarioUseCase {
     private final UsuarioHostalRepository usuarioHostalRepository;
     private final PasswordEncoder passwordEncoder;
     private final HostalValidator hostalValidator;
+    private final Validator validator;
 
     @Override
     @Transactional
@@ -33,11 +44,29 @@ public class UsuarioModel implements UsuarioUseCase {
             Long empresaId,
             CrearUsuarioDto dto
     ) {
+        validarId(empresaId, "empresa");
+        validarDto(dto);
+
+        if (dto.getPassword().getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw error(
+                    HttpStatus.BAD_REQUEST,
+                    "La contraseña admite hasta 72 bytes UTF-8"
+            );
+        }
+
+        Set<Long> hostales = dto.getHostalesIds() == null
+                ? new LinkedHashSet<>()
+                : new LinkedHashSet<>(dto.getHostalesIds());
+
+        for (Long hostalId : hostales) {
+            validarId(hostalId, "hostal");
+        }
+
         hostalValidator.validarEmpresaActiva(empresaId);
 
         String correo = dto.getCorreo()
-                .trim()
-                .toLowerCase();
+                .strip()
+                .toLowerCase(Locale.ROOT);
 
         if (usuarioRepository.existsByCorreoIgnoreCase(correo)) {
             throw error(
@@ -52,26 +81,17 @@ public class UsuarioModel implements UsuarioUseCase {
                         "El rol solicitado no existe"
                 ));
 
-        Set<Long> hostales = dto.getHostalesIds() == null
-                ? new LinkedHashSet<>()
-                : new LinkedHashSet<>(dto.getHostalesIds());
-
         for (Long hostalId : hostales) {
-            hostalValidator.validarHostalActivo(
-                    empresaId,
-                    hostalId
-            );
+            hostalValidator.validarHostalActivo(empresaId, hostalId);
         }
 
         Usuario usuario = Usuario.builder()
                 .empresaId(empresaId)
                 .rol(rol)
-                .nombre(dto.getNombre().trim())
-                .apellido(dto.getApellido().trim())
+                .nombre(dto.getNombre().strip())
+                .apellido(dto.getApellido().strip())
                 .correo(correo)
-                .passwordHash(
-                        passwordEncoder.encode(dto.getPassword())
-                )
+                .passwordHash(passwordEncoder.encode(dto.getPassword()))
                 .estado(true)
                 .build();
 
@@ -89,13 +109,12 @@ public class UsuarioModel implements UsuarioUseCase {
             }
 
             usuarioHostalRepository.flush();
-
             return convertir(usuario, hostales);
 
         } catch (DataIntegrityViolationException ex) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
-                    "No se pudo registrar el usuario",
+                    "No se pudo registrar el usuario por un conflicto de datos",
                     ex
             );
         }
@@ -103,15 +122,12 @@ public class UsuarioModel implements UsuarioUseCase {
 
     @Override
     @Transactional(readOnly = true)
-    public List<UsuarioResponseDto> listarUsuarios(
-            Long empresaId
-    ) {
+    public List<UsuarioResponseDto> listarUsuarios(Long empresaId) {
+        validarId(empresaId, "empresa");
         hostalValidator.validarEmpresaActiva(empresaId);
 
         return usuarioRepository
-                .findByEmpresaIdOrderByApellidoAscNombreAsc(
-                        empresaId
-                )
+                .findByEmpresaIdOrderByApellidoAscNombreAsc(empresaId)
                 .stream()
                 .map(this::convertir)
                 .toList();
@@ -123,9 +139,11 @@ public class UsuarioModel implements UsuarioUseCase {
             Long empresaId,
             Long usuarioId
     ) {
-        return convertir(
-                buscarUsuarioEntidad(empresaId, usuarioId)
-        );
+        validarId(empresaId, "empresa");
+        validarId(usuarioId, "usuario");
+        hostalValidator.validarEmpresaActiva(empresaId);
+
+        return convertir(buscarUsuarioEntidad(empresaId, usuarioId));
     }
 
     @Override
@@ -135,16 +153,15 @@ public class UsuarioModel implements UsuarioUseCase {
             Long usuarioId,
             CambiarEstadoUsuarioDto dto
     ) {
-        Usuario usuario = buscarUsuarioEntidad(
-                empresaId,
-                usuarioId
-        );
+        validarId(empresaId, "empresa");
+        validarId(usuarioId, "usuario");
+        validarDto(dto);
+        hostalValidator.validarEmpresaActiva(empresaId);
 
+        Usuario usuario = buscarUsuarioEntidad(empresaId, usuarioId);
         usuario.setEstado(dto.getEstado());
 
-        return convertir(
-                usuarioRepository.saveAndFlush(usuario)
-        );
+        return convertir(usuarioRepository.saveAndFlush(usuario));
     }
 
     @Override
@@ -154,15 +171,15 @@ public class UsuarioModel implements UsuarioUseCase {
             Long usuarioId,
             Long hostalId
     ) {
-        Usuario usuario = buscarUsuarioEntidad(
-                empresaId,
-                usuarioId
-        );
+        validarId(empresaId, "empresa");
+        validarId(usuarioId, "usuario");
+        validarId(hostalId, "hostal");
 
-        hostalValidator.validarHostalActivo(
-                empresaId,
-                hostalId
-        );
+        hostalValidator.validarEmpresaActiva(empresaId);
+
+        Usuario usuario = buscarUsuarioEntidad(empresaId, usuarioId);
+
+        hostalValidator.validarHostalActivo(empresaId, hostalId);
 
         boolean existe = usuarioHostalRepository
                 .existsByEmpresaIdAndUsuarioIdAndHostalId(
@@ -191,8 +208,14 @@ public class UsuarioModel implements UsuarioUseCase {
             Long usuarioId,
             Long hostalId
     ) {
+        validarId(empresaId, "empresa");
+        validarId(usuarioId, "usuario");
+        validarId(hostalId, "hostal");
+
+        hostalValidator.validarEmpresaActiva(empresaId);
         buscarUsuarioEntidad(empresaId, usuarioId);
 
+        // No exige que el hostal siga activo para retirar el acceso.
         long eliminados = usuarioHostalRepository
                 .deleteByEmpresaIdAndUsuarioIdAndHostalId(
                         empresaId,
@@ -212,23 +235,45 @@ public class UsuarioModel implements UsuarioUseCase {
             Long empresaId,
             Long usuarioId
     ) {
-        if (empresaId == null || empresaId <= 0
-                || usuarioId == null || usuarioId <= 0) {
-            throw error(
-                    HttpStatus.BAD_REQUEST,
-                    "Los identificadores deben ser positivos"
-            );
-        }
+        validarId(empresaId, "empresa");
+        validarId(usuarioId, "usuario");
 
         return usuarioRepository
-                .findByUsuarioIdAndEmpresaId(
-                        usuarioId,
-                        empresaId
-                )
+                .findByUsuarioIdAndEmpresaId(usuarioId, empresaId)
                 .orElseThrow(() -> error(
                         HttpStatus.NOT_FOUND,
                         "Usuario no encontrado en esta empresa"
                 ));
+    }
+
+    private <T> void validarDto(T dto) {
+        if (dto == null) {
+            throw error(
+                    HttpStatus.BAD_REQUEST,
+                    "El cuerpo de la solicitud es obligatorio"
+            );
+        }
+
+        Set<ConstraintViolation<T>> errores = validator.validate(dto);
+
+        if (!errores.isEmpty()) {
+            String mensaje = errores.stream()
+                    .map(ConstraintViolation::getMessage)
+                    .distinct()
+                    .sorted()
+                    .collect(Collectors.joining("; "));
+
+            throw error(HttpStatus.BAD_REQUEST, mensaje);
+        }
+    }
+
+    private void validarId(Long id, String recurso) {
+        if (id == null || id <= 0) {
+            throw error(
+                    HttpStatus.BAD_REQUEST,
+                    "El ID de " + recurso + " debe ser positivo"
+            );
+        }
     }
 
     private UsuarioResponseDto convertir(Usuario usuario) {
@@ -239,9 +284,7 @@ public class UsuarioModel implements UsuarioUseCase {
                 )
                 .stream()
                 .map(UsuarioHostal::getHostalId)
-                .collect(Collectors.toCollection(
-                        LinkedHashSet::new
-                ));
+                .collect(Collectors.toCollection(LinkedHashSet::new));
 
         return convertir(usuario, hostales);
     }

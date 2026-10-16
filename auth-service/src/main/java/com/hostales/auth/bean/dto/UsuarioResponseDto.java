@@ -1,7 +1,10 @@
 package com.hostales.auth.bean.dto;
 
 import com.hostales.auth.bean.enums.NombreRol;
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.OffsetDateTime;
 import java.util.Set;
@@ -23,6 +26,5 @@ public class UsuarioResponseDto {
     private Boolean estado;
 
     private Set<Long> hostalesIds;
-
     private OffsetDateTime creadoEn;
 }

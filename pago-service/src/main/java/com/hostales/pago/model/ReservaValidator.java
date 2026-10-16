@@ -8,11 +8,30 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
 import java.util.Objects;
+import java.util.Set;
 
 @Component
 @RequiredArgsConstructor
 public class ReservaValidator {
+
+    private static final Set<String> ESTADOS_CONOCIDOS = Set.of(
+            "CONFIRMADA",
+            "EN_CURSO",
+            "FINALIZADA",
+            "CANCELADA",
+            "NO_PRESENTADO"
+    );
+
+    private static final Set<String> ESTADOS_CON_PAGO = Set.of(
+            "CONFIRMADA",
+            "EN_CURSO",
+            "FINALIZADA"
+    );
+
+    private static final BigDecimal TOTAL_MAXIMO =
+            new BigDecimal("9999999999.99");
 
     private final ReservaClient reservaClient;
 
@@ -35,7 +54,7 @@ public class ReservaValidator {
             );
         } catch (FeignException ex) {
             if (ex.status() == 404) {
-                throw error(
+                throw new ResponseStatusException(
                         HttpStatus.NOT_FOUND,
                         "Empresa, hostal o reserva no encontrados",
                         ex
@@ -43,14 +62,14 @@ public class ReservaValidator {
             }
 
             if (ex.status() == 409) {
-                throw error(
+                throw new ResponseStatusException(
                         HttpStatus.CONFLICT,
                         "La empresa, hostal o reserva no están disponibles",
                         ex
                 );
             }
 
-            throw error(
+            throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE,
                     "No se pudo consultar reserva-service",
                     ex
@@ -58,17 +77,12 @@ public class ReservaValidator {
         }
 
         validarRespuesta(reserva, empresaId, hostalId, reservaId);
-
         return reserva;
     }
 
     public void validarPermitePago(ReservaResumenDto reserva) {
-        boolean permitido =
-                "CONFIRMADA".equals(reserva.getEstado())
-                        || "EN_CURSO".equals(reserva.getEstado())
-                        || "FINALIZADA".equals(reserva.getEstado());
-
-        if (!permitido) {
+        if (reserva.getEstado() == null
+                || !ESTADOS_CON_PAGO.contains(reserva.getEstado())) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
                     "El estado de la reserva no permite pagos"
@@ -86,19 +100,22 @@ public class ReservaValidator {
                 || !Objects.equals(reserva.getEmpresaId(), empresaId)
                 || !Objects.equals(reserva.getHostalId(), hostalId)
                 || !Objects.equals(reserva.getReservaId(), reservaId)) {
-
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY,
                     "reserva-service devolvió una reserva inesperada"
             );
         }
 
-        if (reserva.getTotal() == null
-                || reserva.getTotal().signum() <= 0
-                || reserva.getMoneda() == null
-                || !reserva.getMoneda().matches("^[A-Z]{3}$")
-                || reserva.getEstado() == null) {
+        BigDecimal total = reserva.getTotal();
 
+        if (total == null
+                || total.signum() < 0
+                || total.compareTo(TOTAL_MAXIMO) > 0
+                || total.stripTrailingZeros().scale() > 2
+                || reserva.getMoneda() == null
+                || !reserva.getMoneda().matches("[A-Z]{3}")
+                || reserva.getEstado() == null
+                || !ESTADOS_CONOCIDOS.contains(reserva.getEstado())) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY,
                     "La reserva contiene datos de cobro inválidos"
@@ -113,17 +130,5 @@ public class ReservaValidator {
                     "El ID de " + recurso + " debe ser positivo"
             );
         }
-    }
-
-    private ResponseStatusException error(
-            HttpStatus estado,
-            String mensaje,
-            Throwable causa
-    ) {
-        return new ResponseStatusException(
-                estado,
-                mensaje,
-                causa
-        );
     }
 }

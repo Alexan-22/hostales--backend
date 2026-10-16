@@ -10,8 +10,7 @@ import java.util.List;
 public interface UsuarioHostalRepository
         extends JpaRepository<UsuarioHostal, UsuarioHostalId> {
 
-    List<UsuarioHostal>
-    findByEmpresaIdAndUsuarioIdOrderByHostalIdAsc(
+    List<UsuarioHostal> findByEmpresaIdAndUsuarioIdOrderByHostalIdAsc(
             Long empresaId,
             Long usuarioId
     );
@@ -32,4 +31,6 @@ public interface UsuarioHostalRepository
     @Transactional
     long deleteByEmpresaIdAndUsuarioId(
             Long empresaId,
-
+            Long usuarioId
+    );
+}
